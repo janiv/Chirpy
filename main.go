@@ -24,6 +24,14 @@ type apiConfig struct {
 	platform       string
 }
 
+type ChirpResp struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
+}
+
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg.fileserverHits.Add(1)
@@ -71,7 +79,8 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 
 func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Body string `json:"body"`
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
@@ -89,22 +98,44 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 		}
 		respondWithJSON(w, 400, respBody)
 		log.Printf("Chirp too long, chirp is %d characters", len(params.Body))
-
-	} else {
-		type returnVals struct {
-			Cleaned_body string `json:"cleaned_body"`
-		}
-		respBody := returnVals{
-			Cleaned_body: chirperCleaner(params.Body),
-		}
-		dat, err := json.Marshal(respBody)
-		if err != nil {
-			log.Printf("Error marshaling JSON: %s", err)
-			respondWithError(w, 500, "something went wrong")
-			return
-		}
-		respondWithJSON(w, 201, dat)
+		return
 	}
+	usr, err := cfg.db.GetUserByID(r.Context(), params.UserID)
+	if err != nil {
+		respondWithError(w, 403, "scram")
+		log.Printf("Error occurred: %s", err)
+		return
+	}
+	curr_time := time.Now()
+	chirp_params := database.CreateChirpParams{
+		ID:        uuid.New(),
+		CreatedAt: curr_time,
+		UpdatedAt: curr_time,
+		Body:      chirperCleaner(params.Body),
+		UserID:    usr.ID,
+	}
+	chrp, err := cfg.db.CreateChirp(r.Context(), chirp_params)
+	if err != nil {
+		respondWithError(w, 500, "oops")
+		log.Fatal(err)
+		return
+	}
+	type returnVals struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserID    uuid.UUID `json:"user_id"`
+	}
+	respBody := returnVals{
+		ID:        chrp.ID,
+		CreatedAt: chrp.CreatedAt,
+		UpdatedAt: chrp.UpdatedAt,
+		Body:      chrp.Body,
+		UserID:    chrp.UserID,
+	}
+	respondWithJSON(w, 201, respBody)
+
 }
 
 func chirperCleaner(input string) string {
@@ -162,6 +193,48 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 
 }
 
+func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
+	chirps, err := cfg.db.GetChirps(r.Context())
+	if err != nil {
+		respondWithError(w, 500, "chirps bottled")
+		return
+	}
+	var resp []ChirpResp
+	for _, c := range chirps {
+		curr := ChirpResp{
+			ID:        c.ID,
+			CreatedAt: c.CreatedAt,
+			UpdatedAt: c.UpdatedAt,
+			Body:      c.Body,
+			UserID:    c.UserID,
+		}
+		resp = append(resp, curr)
+	}
+	respondWithJSON(w, 200, resp)
+}
+
+func (cfg *apiConfig) handlerGetChirpByID(w http.ResponseWriter, r *http.Request) {
+	path_param := r.PathValue("chirpID")
+	chirp_id, err := uuid.Parse(path_param)
+	if err != nil {
+		respondWithError(w, 500, "could not parse id")
+		return
+	}
+	chirp, err := cfg.db.GetChirpByID(r.Context(), chirp_id)
+	if err != nil {
+		respondWithError(w, 404, "chirp no here")
+		return
+	}
+	resp := ChirpResp{
+		ID:        chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body:      chirp.Body,
+		UserID:    chirp.UserID,
+	}
+	respondWithJSON(w, 200, resp)
+}
+
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
@@ -180,8 +253,10 @@ func main() {
 	serve_mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(filePathRoot)))))
 	serve_mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	serve_mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
-	serve_mux.HandleFunc("POST /api/validate_chirp", apiCfg.handlerChirp)
+	serve_mux.HandleFunc("POST /api/chirps", apiCfg.handlerChirp)
 	serve_mux.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
+	serve_mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
+	serve_mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirpByID)
 
 	server := http.Server{
 		Handler: serve_mux,
