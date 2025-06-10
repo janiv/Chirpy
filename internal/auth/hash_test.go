@@ -2,6 +2,7 @@ package auth
 
 import (
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
@@ -59,6 +60,33 @@ func TestJWT(t *testing.T) {
 			if ret_id != c.testUserID {
 				t.Errorf("Expected: %s; got %s", c.testUserID, ret_id)
 			}
+		})
+	}
+}
+
+func TestGetBearerToken(t *testing.T) {
+	cases := []struct {
+		key http.Header
+		val string
+	}{
+		{
+			key: http.Header{
+				"Content-Type":  {"application/json"},
+				"Authorization": {"Bearer justsometoken"},
+			},
+			val: "justsometoken",
+		},
+	}
+	for i, c := range cases {
+		t.Run(fmt.Sprintf("Test case %v", i), func(t *testing.T) {
+			res, err := GetBearerToken(c.key)
+			if err != nil {
+				t.Errorf("GetBearerToken Broke")
+			}
+			if c.val != res {
+				t.Errorf("Expected %s got %s instead", c.val, res)
+			}
+
 		})
 	}
 }

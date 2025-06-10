@@ -13,7 +13,7 @@ RETURNING id, created_at, updated_at, email;
 SELECT * FROM users WHERE email = $1;
 
 -- name: GetUserByID :one
-SELECT id, created_at, updated_at, email FROM users WHERE id = $1 LIMIT 1;
+SELECT * FROM users WHERE id = $1;
 
 -- name: Reset :exec
 DELETE FROM users;

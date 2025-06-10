@@ -69,8 +69,7 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 
 func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Body   string    `json:"body"`
-		UserID uuid.UUID `json:"user_id"`
+		Body string `json:"body"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
@@ -90,19 +89,26 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Chirp too long, chirp is %d characters", len(params.Body))
 		return
 	}
-	usr, err := cfg.db.GetUserByID(r.Context(), params.UserID)
+	authToken, err := auth.GetBearerToken(r.Header)
 	if err != nil {
-		respondWithError(w, 403, "scram")
+		respondWithError(w, 403, "bearer token where is")
 		log.Printf("Error occurred: %s", err)
 		return
 	}
+	authUUID, err := auth.ValidateJWT(authToken, cfg.secret)
+	if err != nil {
+		respondWithError(w, 401, "validate jwt says no")
+		log.Printf("Error occurred: %s", err)
+		return
+	}
+
 	curr_time := time.Now()
 	chirp_params := database.CreateChirpParams{
 		ID:        uuid.New(),
 		CreatedAt: curr_time,
 		UpdatedAt: curr_time,
 		Body:      chirperCleaner(params.Body),
-		UserID:    usr.ID,
+		UserID:    authUUID,
 	}
 	chrp, err := cfg.db.CreateChirp(r.Context(), chirp_params)
 	if err != nil {
@@ -234,8 +240,9 @@ func (cfg *apiConfig) handlerGetChirpByID(w http.ResponseWriter, r *http.Request
 
 func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	type requestParameters struct {
-		Password string `json:"password"`
-		Email    string `json:"email"`
+		Password         string `json:"password"`
+		Email            string `json:"email"`
+		ExpiresInSeconds int    `json:"expires_in_seconds,omitempty"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := requestParameters{}
@@ -245,6 +252,10 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	email := params.Email
+	ttl := time.Duration(params.ExpiresInSeconds) * time.Second
+	if ttl <= (time.Duration(3600) * time.Second) {
+		ttl = time.Duration(1) * time.Hour
+	}
 	usr, err := cfg.db.GetUserByEmail(r.Context(), email)
 	if err != nil {
 		respondWithError(w, 401, "incorrect email or password")
@@ -253,17 +264,24 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	if passErr != nil {
 		respondWithError(w, 401, "incorrect email or password")
 	}
+	tokenString, err := auth.MakeJWT(usr.ID, cfg.secret, ttl)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error: %s", err))
+	}
+
 	type respParams struct {
 		ID        uuid.UUID `json:"id"`
 		CreatedAt time.Time `json:"created_at"`
 		UpdatedAt time.Time `json:"updated_at"`
 		Email     string    `json:"email"`
+		Token     string    `json:"token"`
 	}
 	resp := respParams{
 		ID:        usr.ID,
 		CreatedAt: usr.CreatedAt,
 		UpdatedAt: usr.UpdatedAt,
 		Email:     usr.Email,
+		Token:     tokenString,
 	}
 	respondWithJSON(w, 200, resp)
 }

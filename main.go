@@ -16,12 +16,14 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
 	platform       string
+	secret         string
 }
 
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
+	jwtSecret := os.Getenv("JWT_SECRET")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		log.Printf("db failed to open: %s", err)
@@ -31,6 +33,7 @@ func main() {
 	apiCfg := apiConfig{}
 	apiCfg.db = database.New(db)
 	apiCfg.platform = platform
+	apiCfg.secret = jwtSecret
 	serve_mux := http.NewServeMux()
 	serve_mux.HandleFunc("GET /api/healthz", handlerReadiness)
 	serve_mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(filePathRoot)))))
