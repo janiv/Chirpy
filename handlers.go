@@ -240,9 +240,8 @@ func (cfg *apiConfig) handlerGetChirpByID(w http.ResponseWriter, r *http.Request
 
 func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	type requestParameters struct {
-		Password         string `json:"password"`
-		Email            string `json:"email"`
-		ExpiresInSeconds int    `json:"expires_in_seconds,omitempty"`
+		Password string `json:"password"`
+		Email    string `json:"email"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := requestParameters{}
@@ -252,10 +251,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	email := params.Email
-	ttl := time.Duration(params.ExpiresInSeconds) * time.Second
-	if ttl <= (time.Duration(3600) * time.Second) {
-		ttl = time.Duration(1) * time.Hour
-	}
+	ttl := time.Duration(1) * time.Hour
 	usr, err := cfg.db.GetUserByEmail(r.Context(), email)
 	if err != nil {
 		respondWithError(w, 401, "incorrect email or password")
@@ -268,20 +264,97 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		respondWithError(w, 500, fmt.Sprintf("Error: %s", err))
 	}
+	refreshToken, _ := auth.MakeRefreshToken()
+	currTime := time.Now()
+	sixtyDays := time.Hour * 24 * 60
+	expiry := currTime.Add(sixtyDays)
+	refreshTokenParams := database.CreateRefreshTokenParams{
+		Token:     refreshToken,
+		CreatedAt: currTime,
+		UpdatedAt: currTime,
+		ExpiresAt: expiry,
+		UserID:    usr.ID,
+	}
+	ref, err := cfg.db.CreateRefreshToken(r.Context(), refreshTokenParams)
+	if err != nil {
+		respondWithError(w, 500, "tokens brokededed")
+	}
 
 	type respParams struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
-		Token     string    `json:"token"`
+		ID           uuid.UUID `json:"id"`
+		CreatedAt    time.Time `json:"created_at"`
+		UpdatedAt    time.Time `json:"updated_at"`
+		Email        string    `json:"email"`
+		Token        string    `json:"token"`
+		RefreshToken string    `json:"refresh_token"`
 	}
 	resp := respParams{
-		ID:        usr.ID,
-		CreatedAt: usr.CreatedAt,
-		UpdatedAt: usr.UpdatedAt,
-		Email:     usr.Email,
-		Token:     tokenString,
+		ID:           usr.ID,
+		CreatedAt:    usr.CreatedAt,
+		UpdatedAt:    usr.UpdatedAt,
+		Email:        usr.Email,
+		Token:        tokenString,
+		RefreshToken: ref.Token,
 	}
 	respondWithJSON(w, 200, resp)
+}
+
+func (cfg *apiConfig) handlerRefresh(w http.ResponseWriter, r *http.Request) {
+	giventkn, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "token no in bear")
+	}
+
+	tkn, err := cfg.db.GetRefreshTokenByToken(r.Context(), giventkn)
+	if err != nil {
+		respondWithError(w, 401, "token no exist y u lie")
+	}
+	currTime := time.Now()
+	if currTime.After(tkn.ExpiresAt) {
+		respondWithError(w, 401, "token expire u late")
+	}
+	if (tkn.RevokedAt.Valid) && currTime.After(tkn.RevokedAt.Time) {
+		respondWithError(w, 401, "token revoke")
+	}
+	jwtTkn, err := auth.MakeJWT(tkn.UserID, cfg.secret, time.Hour)
+	if err != nil {
+		respondWithError(w, 500, "jwtbroken")
+	}
+	updParams := database.UpdateRefreshTokenUpdateTimeParams{
+		UpdatedAt: currTime,
+		Token:     tkn.Token,
+	}
+	updErr := cfg.db.UpdateRefreshTokenUpdateTime(r.Context(), updParams)
+	if updErr != nil {
+		respondWithError(w, 500, "update broke")
+	}
+	type respParams struct {
+		Token string `json:"token"`
+	}
+	resp := respParams{
+		Token: jwtTkn,
+	}
+	respondWithJSON(w, 200, resp)
+}
+
+func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, r *http.Request) {
+	givenTkn, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "where bear")
+	}
+	tkn, err := cfg.db.GetRefreshTokenByToken(r.Context(), givenTkn)
+	if err != nil {
+		respondWithError(w, 403, "bro no here")
+	}
+	currTime := time.Now()
+	revokeParams := database.UpdateRefreshTokenRevokeParams{
+		UpdatedAt: currTime,
+		Token:     tkn.Token,
+	}
+	revErr := cfg.db.UpdateRefreshTokenRevoke(r.Context(), revokeParams)
+	if revErr != nil {
+		respondWithError(w, 500, "revoke fail")
+	}
+	w.WriteHeader(204)
+
 }
