@@ -21,6 +21,17 @@ type ChirpResp struct {
 	Body      string    `json:"body"`
 	UserID    uuid.UUID `json:"user_id"`
 }
+type requestParametersPasswordAndEmail struct {
+	Password string `json:"password"`
+	Email    string `json:"email"`
+}
+
+type UpdateEmailPassword struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAT time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+}
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -239,12 +250,8 @@ func (cfg *apiConfig) handlerGetChirpByID(w http.ResponseWriter, r *http.Request
 }
 
 func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
-	type requestParameters struct {
-		Password string `json:"password"`
-		Email    string `json:"email"`
-	}
 	decoder := json.NewDecoder(r.Body)
-	params := requestParameters{}
+	params := requestParametersPasswordAndEmail{}
 	err := decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, 500, "Something broke in json")
@@ -354,6 +361,93 @@ func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, r *http.Request) {
 	revErr := cfg.db.UpdateRefreshTokenRevoke(r.Context(), revokeParams)
 	if revErr != nil {
 		respondWithError(w, 500, "revoke fail")
+	}
+	w.WriteHeader(204)
+
+}
+
+func (cfg *apiConfig) handlerUpdateEmailPassword(w http.ResponseWriter, r *http.Request) {
+	// Check bearer token
+	givenTkn, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "bear missing")
+		return
+	}
+	usr, err := auth.ValidateJWT(givenTkn, cfg.secret)
+	if err != nil {
+		respondWithError(w, 401, "token schmoken")
+	}
+
+	// Get email/pword update
+	decoder := json.NewDecoder(r.Body)
+	params := requestParametersPasswordAndEmail{}
+	ReqErr := decoder.Decode(&params)
+	if ReqErr != nil {
+		respondWithError(w, 401, "Something broke in json")
+		return
+	}
+	pword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		respondWithError(w, 401, "hahash")
+		return
+	}
+
+	// Get usr, we could update by email, but something tells me is bad idea
+	EPUpdParams := database.UpdateUserEmailAndPasswordParams{
+		HashedPassword: pword,
+		Email:          params.Email,
+		UpdatedAt:      time.Now(),
+		ID:             usr,
+	}
+	updUsr, EPUpderr := cfg.db.UpdateUserEmailAndPassword(r.Context(), EPUpdParams)
+	if EPUpderr != nil {
+		respondWithError(w, 401, "upd error")
+		return
+	}
+	respParams := UpdateEmailPassword{
+		ID:        updUsr.ID,
+		CreatedAT: updUsr.CreatedAt,
+		UpdatedAt: updUsr.UpdatedAt,
+		Email:     updUsr.Email,
+	}
+	respondWithJSON(w, 200, respParams)
+
+}
+
+func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, r *http.Request) {
+	givenTkn, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "bear missing")
+		return
+	}
+	usr, err := auth.ValidateJWT(givenTkn, cfg.secret)
+	if err != nil {
+		respondWithError(w, 403, "token schmoken")
+		return
+	}
+	path_param := r.PathValue("chirpID")
+	chirpID, chirpIDErr := uuid.Parse(path_param)
+	if chirpIDErr != nil {
+		respondWithError(w, 404, "bruh where chirp id")
+		return
+	}
+	chirp, err := cfg.db.GetChirpByID(r.Context(), chirpID)
+	if err != nil {
+		respondWithError(w, 404, "no such chirp")
+	}
+	if chirp.UserID != usr {
+		respondWithError(w, 403, "not yours")
+		return
+	}
+
+	delParams := database.DeleteChirpByIDParams{
+		ID:     chirpID,
+		UserID: usr,
+	}
+	delErr := cfg.db.DeleteChirpByID(r.Context(), delParams)
+	if delErr != nil {
+		respondWithError(w, 404, "bruh no exist")
+		return
 	}
 	w.WriteHeader(204)
 

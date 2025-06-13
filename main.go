@@ -46,6 +46,8 @@ func main() {
 	serve_mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirpByID)
 	serve_mux.HandleFunc("POST /api/refresh", apiCfg.handlerRefresh)
 	serve_mux.HandleFunc("POST /api/revoke", apiCfg.handlerRevoke)
+	serve_mux.HandleFunc("PUT /api/users", apiCfg.handlerUpdateEmailPassword)
+	serve_mux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.handlerDeleteChirp)
 
 	server := http.Server{
 		Handler: serve_mux,
