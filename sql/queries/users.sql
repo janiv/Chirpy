@@ -7,7 +7,7 @@ VALUES(
     $4,
     $5
 )
-RETURNING id, created_at, updated_at, email;
+RETURNING id, created_at, updated_at, email, is_chirpy_red;
 
 -- name: GetUserByEmail :one
 SELECT * FROM users WHERE email = $1;
@@ -17,6 +17,9 @@ SELECT * FROM users WHERE id = $1;
 
 -- name: UpdateUserEmailAndPassword :one
 UPDATE users SET hashed_password = $1, email = $2, updated_at = $3 WHERE id = $4 RETURNING *;
+
+-- name: UpdateUserIsChirpyRed :one
+UPDATE users set is_chirpy_red = TRUE WHERE id = $1 RETURNING *;
 
 -- name: Reset :exec
 DELETE FROM users;

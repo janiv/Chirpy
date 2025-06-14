@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -26,11 +27,12 @@ type requestParametersPasswordAndEmail struct {
 	Email    string `json:"email"`
 }
 
-type UpdateEmailPassword struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAT time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
+type RespWithUser struct {
+	ID          uuid.UUID `json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Email       string    `json:"email"`
+	IsChirpyRed bool      `json:"is_chirpy_red"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -191,24 +193,35 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	type respParams struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
-	}
-	resp := respParams{
-		ID:        usr.ID,
-		CreatedAt: usr.CreatedAt,
-		UpdatedAt: usr.UpdatedAt,
-		Email:     usr.Email,
+	resp := RespWithUser{
+		ID:          usr.ID,
+		CreatedAt:   usr.CreatedAt,
+		UpdatedAt:   usr.UpdatedAt,
+		Email:       usr.Email,
+		IsChirpyRed: usr.IsChirpyRed.Bool,
 	}
 	respondWithJSON(w, 201, resp)
 
 }
 
 func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
-	chirps, err := cfg.db.GetChirps(r.Context())
+	s := r.URL.Query().Get("author_id")
+	ord := r.URL.Query().Get("sort")
+	var chirps []database.Chirp
+	var err error
+	if len(s) <= 0 {
+		chirps, err = cfg.db.GetChirps(r.Context())
+	} else {
+		usrUUID, err := uuid.Parse(s)
+		if err != nil {
+			respondWithError(w, 500, "wut is uuid")
+		}
+		chirps, err = cfg.db.GetChirpsByUserID(r.Context(), usrUUID)
+		if err != nil {
+			respondWithError(w, 500, "chirps bottled")
+			return
+		}
+	}
 	if err != nil {
 		respondWithError(w, 500, "chirps bottled")
 		return
@@ -223,6 +236,11 @@ func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
 			UserID:    c.UserID,
 		}
 		resp = append(resp, curr)
+	}
+	if len(ord) <= 0 || ord != "asc" {
+		sort.Slice(resp, func(i, j int) bool { return resp[i].CreatedAt.After(resp[j].CreatedAt) })
+	} else {
+		sort.Slice(resp, func(i, j int) bool { return resp[i].CreatedAt.Before(resp[j].CreatedAt) })
 	}
 	respondWithJSON(w, 200, resp)
 }
@@ -292,6 +310,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		CreatedAt    time.Time `json:"created_at"`
 		UpdatedAt    time.Time `json:"updated_at"`
 		Email        string    `json:"email"`
+		IsChirpyRed  bool      `json:"is_chirpy_red"`
 		Token        string    `json:"token"`
 		RefreshToken string    `json:"refresh_token"`
 	}
@@ -300,6 +319,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:    usr.CreatedAt,
 		UpdatedAt:    usr.UpdatedAt,
 		Email:        usr.Email,
+		IsChirpyRed:  usr.IsChirpyRed.Bool,
 		Token:        tokenString,
 		RefreshToken: ref.Token,
 	}
@@ -404,11 +424,12 @@ func (cfg *apiConfig) handlerUpdateEmailPassword(w http.ResponseWriter, r *http.
 		respondWithError(w, 401, "upd error")
 		return
 	}
-	respParams := UpdateEmailPassword{
-		ID:        updUsr.ID,
-		CreatedAT: updUsr.CreatedAt,
-		UpdatedAt: updUsr.UpdatedAt,
-		Email:     updUsr.Email,
+	respParams := RespWithUser{
+		ID:          updUsr.ID,
+		CreatedAt:   updUsr.CreatedAt,
+		UpdatedAt:   updUsr.UpdatedAt,
+		Email:       updUsr.Email,
+		IsChirpyRed: updUsr.IsChirpyRed.Bool,
 	}
 	respondWithJSON(w, 200, respParams)
 
@@ -447,6 +468,42 @@ func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, r *http.Request)
 	delErr := cfg.db.DeleteChirpByID(r.Context(), delParams)
 	if delErr != nil {
 		respondWithError(w, 404, "bruh no exist")
+		return
+	}
+	w.WriteHeader(204)
+
+}
+
+func (cfg *apiConfig) handlerSetChirpyRed(w http.ResponseWriter, r *http.Request) {
+	apiKey, err := auth.GetAPIKey(r.Header)
+	if err != nil {
+		w.WriteHeader(401)
+		return
+	}
+	if apiKey != cfg.polka_key {
+		w.WriteHeader(401)
+		return
+	}
+	type requestParams struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserID uuid.UUID `json:"user_id"`
+		} `json:"data"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	params := requestParams{}
+	json_err := decoder.Decode(&params)
+	if json_err != nil {
+		respondWithError(w, 500, "Something broke in json")
+		return
+	}
+	if params.Event != "user.upgraded" {
+		w.WriteHeader(204)
+		return
+	}
+	_, UpdErr := cfg.db.UpdateUserIsChirpyRed(r.Context(), params.Data.UserID)
+	if UpdErr != nil {
+		w.WriteHeader(404)
 		return
 	}
 	w.WriteHeader(204)
